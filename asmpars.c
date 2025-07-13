@@ -2615,7 +2615,7 @@ static void AddReference(PSymbolEntry Node) {
 static PSymbolEntry FindNode_FNode(char* Name, TempType SearchType, LongInt Handle) {
     PSymbolEntry Lauf;
 
-    Lauf = (PSymbolEntry)SearchTree((PTree)FirstSymbol, Name, Handle);
+    Lauf = (PSymbolEntry)SearchTree(&FirstSymbol->Tree, Name, Handle);
 
     if (Lauf) {
         if (Lauf->SymWert.Typ & SearchType) {
@@ -2686,7 +2686,7 @@ static PSymbolEntry FindNode(char const* Name_O, TempType SearchType) {
 static PSymbolEntry FindLocNode_FNode(char* Name, TempType SearchType, LongInt Handle) {
     PSymbolEntry Lauf;
 
-    Lauf = (PSymbolEntry)SearchTree((PTree)FirstLocSymbol, Name, Handle);
+    Lauf = (PSymbolEntry)SearchTree(&FirstLocSymbol->Tree, Name, Handle);
 
     if (Lauf) {
         if (!(Lauf->SymWert.Typ & SearchType)) {
@@ -3042,7 +3042,7 @@ void PrintSymbolList(void) {
     Context.Sum = Context.USum = 0;
     ActPageWidth               = (PageWidth == 0) ? 80 : PageWidth;
     Context.cwidth             = ActPageWidth >> 1;
-    IterTree((PTree)FirstSymbol, PrintSymbolList_PNode, &Context);
+    IterTree(&FirstSymbol->Tree, PrintSymbolList_PNode, &Context);
     if (Context.Zeilenrest.p_str[0] != '\0') {
         Context.Zeilenrest.p_str[strlen(Context.Zeilenrest.p_str) - 1] = '\0';
         WrLstLine(Context.Zeilenrest.p_str);
@@ -3135,7 +3135,7 @@ void PrintDebSymbols(FILE* f) {
     DebContext.f = f;
     for (DebContext.Space = SegNone; DebContext.Space < SegCount; DebContext.Space++) {
         DebContext.HWritten = False;
-        IterTree((PTree)FirstSymbol, PrintDebSymbols_PNode, &DebContext);
+        IterTree(&FirstSymbol->Tree, PrintDebSymbols_PNode, &DebContext);
     }
     as_dynstr_free(&DebContext.s);
 }
@@ -3169,7 +3169,7 @@ void PrintNoISymbols(FILE* f) {
 
     Context.f      = f;
     Context.Handle = -1;
-    IterTree((PTree)FirstSymbol, PrNoISection, &Context);
+    IterTree(&FirstSymbol->Tree, PrNoISection, &Context);
     Context.Handle++;
     for (CurrSection = FirstSection; CurrSection; CurrSection = CurrSection->Next) {
         if (ChunkSum(&CurrSection->Usage) > 0) {
@@ -3179,7 +3179,7 @@ void PrintNoISymbols(FILE* f) {
             ChkIO(ErrNum_FileWriteError);
             fprintf(f, "\n");
             ChkIO(ErrNum_FileWriteError);
-            IterTree((PTree)FirstSymbol, PrNoISection, &Context);
+            IterTree(&FirstSymbol->Tree, PrNoISection, &Context);
             Context.Handle++;
             fprintf(f, "}FUNC ");
             ChkIO(ErrNum_FileWriteError);
@@ -3192,7 +3192,7 @@ void PrintNoISymbols(FILE* f) {
 }
 
 void PrintSymbolTree(void) {
-    DumpTree((PTree)FirstSymbol);
+    DumpTree(&FirstSymbol->Tree);
 }
 
 static void ClearSymbolList_ClearNode(PTree Node, void* pData) {
@@ -3931,7 +3931,7 @@ void PrintRegDefs(void) {
     Context.Sum = Context.USum = 0;
     ActPageWidth               = (PageWidth == 0) ? 80 : PageWidth;
     Context.cwidth             = ActPageWidth >> 1;
-    IterTree((PTree)FirstSymbol, PrintRegList_PNode, &Context);
+    IterTree(&FirstSymbol->Tree, PrintRegList_PNode, &Context);
 
     if (*Context.Zeilenrest.p_str) {
         WrLstLine(Context.Zeilenrest.p_str);
