@@ -49,7 +49,7 @@ void IterTree(PTree Tree, TTreeCallback Callback, void* pData) {
     }
 }
 
-static void TreeDepthIter(PTree Tree, LongInt Level, LongInt* pMin, LongInt* pMax) {
+void TreeDepthIter(PTree Tree, LongInt Level, LongInt* pMin, LongInt* pMax) {
     if (Tree) {
         TreeDepthIter(Tree->Left, Level + 1, pMin, pMax);
         TreeDepthIter(Tree->Right, Level + 1, pMin, pMax);

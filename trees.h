@@ -27,6 +27,8 @@ typedef Boolean (*TTreeAdder)(PTree* PDest, PTree Neu, void* pData);
 
 extern void IterTree(PTree Tree, TTreeCallback Callback, void* pData);
 
+extern void TreeDepthIter(PTree Tree, LongInt Level, LongInt* pMin, LongInt* pMax);
+
 extern void GetTreeDepth(PTree Tree, LongInt* pMin, LongInt* pMax);
 
 extern void DestroyTree(PTree* Tree, TTreeCallback Callback, void* pData);

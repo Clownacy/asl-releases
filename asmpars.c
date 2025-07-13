@@ -41,6 +41,7 @@
 
 #define LEAVE  goto func_exit
 #define LEAVE2 goto func_exit2
+#define SYMBOL_HASH_TABLE_TOTAL_BUCKETS 0x10000
 
 /* Mask, Min 6 Max are computed at initialization */
 
@@ -123,6 +124,10 @@ typedef struct sSymbolEntry {
     LongInt    LineNum;
 } TSymbolEntry, *PSymbolEntry;
 
+typedef struct sSymbolHashTable {
+    PSymbolEntry Buckets[SYMBOL_HASH_TABLE_TOTAL_BUCKETS];
+} TSymbolHashTable, *PSymbolHashTable;
+
 typedef struct sSymbolStackEntry {
     struct sSymbolStackEntry* Next;
     TempResult                Contents;
@@ -165,21 +170,93 @@ typedef struct sRegDef {
     PRegDefList     Defs, DoneDefs;
 } TRegDef, *PRegDef;
 
-static PSymbolEntry FirstSymbol, FirstLocSymbol;
-static PDefSymbol   FirstDefSymbol;
-/*static*/ PCToken  FirstSection;
-static Boolean      DoRefs, /* Querverweise protokollieren */
+static TSymbolHashTable FirstSymbol, FirstLocSymbol;
+static PDefSymbol       FirstDefSymbol;
+/*static*/ PCToken      FirstSection;
+static Boolean          DoRefs, /* Querverweise protokollieren */
         RegistersDefined;
-static PLocHandle   FirstLocHandle;
-static PSymbolStack FirstStack;
-static PCToken      MomSection;
-static char*        LastGlobSymbol;
-static PFunction    FirstFunction; /* Liste definierter Funktionen */
+static PLocHandle       FirstLocHandle;
+static PSymbolStack     FirstStack;
+static PCToken          MomSection;
+static char*            LastGlobSymbol;
+static PFunction        FirstFunction; /* Liste definierter Funktionen */
+
+static unsigned int GetHash(const char* Name)
+{
+    /* Hash the identifier, using djb2. */
+    /* http://www.cse.yorku.ca/~oz/hash.html */
+    unsigned int Hash = 5381;
+
+    while (*Name != '\0')
+        Hash = Hash * 33 + (unsigned int)as_toupper(*Name++); /* Hash the identifier in upper-case form, so that case-insensitive mode works. */
+
+    return Hash;
+}
+
+static void SymbolHashTableInit(PSymbolHashTable SymbolHashTable) {
+    size_t i;
+
+    for (i = 0; i < SYMBOL_HASH_TABLE_TOTAL_BUCKETS; ++i)
+        SymbolHashTable->Buckets[i] = NULL;
+}
+
+static void IterSymbolHashTable(PSymbolHashTable SymbolHashTable, TTreeCallback Callback, void* pData) {
+    size_t i;
+
+    for (i = 0; i < SYMBOL_HASH_TABLE_TOTAL_BUCKETS; ++i)
+        IterTree(&SymbolHashTable->Buckets[i]->Tree, Callback, pData);
+}
+
+static void GetSymbolHashTableDepth(PSymbolHashTable SymbolHashTable, LongInt* pMin, LongInt* pMax) {
+    size_t i;
+
+    *pMin = MaxLongInt;
+    *pMax = 0;
+
+    for (i = 0; i < SYMBOL_HASH_TABLE_TOTAL_BUCKETS; ++i)
+    {
+        const PSymbolEntry Bucket = SymbolHashTable->Buckets[i];
+        /* Ignore empty buckets, because they would cause pMin to always be 0. */
+        if (Bucket)
+            TreeDepthIter(&Bucket->Tree, 0, pMin, pMax);
+    }
+}
+
+static void DestroySymbolHashTable(PSymbolHashTable SymbolHashTable, TTreeCallback Callback, void* pData) {
+    size_t i;
+
+    for (i = 0; i < SYMBOL_HASH_TABLE_TOTAL_BUCKETS; ++i)
+    {
+        PSymbolEntry* const Bucket = &SymbolHashTable->Buckets[i];
+        PTree TreeRoot = &(*Bucket)->Tree;
+        *Bucket = NULL;
+        DestroyTree(&TreeRoot, Callback, pData);
+    }
+}
+
+static void DumpSymbolHashTable(PSymbolHashTable SymbolHashTable) {
+    size_t i;
+
+    for (i = 0; i < SYMBOL_HASH_TABLE_TOTAL_BUCKETS; ++i)
+        DumpTree(&SymbolHashTable->Buckets[i]->Tree);
+}
+
+static PSymbolEntry SearchSymbolHashTable(PSymbolHashTable SymbolHashTable, char* Name, LongInt Attribute) {
+    return (PSymbolEntry)SearchTree(&SymbolHashTable->Buckets[GetHash(Name) % SYMBOL_HASH_TABLE_TOTAL_BUCKETS]->Tree, Name, Attribute);
+}
+
+static Boolean EnterSymbolHashTable(PSymbolHashTable SymbolHashTable, PSymbolEntry Neu, TTreeAdder Adder, void* pData) {
+    PSymbolEntry* const Bucket = &SymbolHashTable->Buckets[GetHash(Neu->Tree.Name) % SYMBOL_HASH_TABLE_TOTAL_BUCKETS];
+    PTree TreeRoot = &(*Bucket)->Tree;
+    const Boolean Result = EnterTree(&TreeRoot, &Neu->Tree, Adder, pData);
+    *Bucket = (PSymbolEntry)TreeRoot;
+    return Result;
+}
 
 void AsmParsInit(void) {
-    FirstSymbol = NULL;
+    SymbolHashTableInit(&FirstSymbol);
 
-    FirstLocSymbol = NULL;
+    SymbolHashTableInit(&FirstLocSymbol);
     MomLocHandle   = -1;
     SetMomSection(-1);
     FirstSection     = NULL;
@@ -2164,16 +2241,13 @@ static Boolean SymbolAdder(PTree* PDest, PTree Neu, void* pData) {
 
 static void EnterLocSymbol(PSymbolEntry Neu) {
     TEnterStruct EnterStruct;
-    PTree        TreeRoot;
 
     Neu->Tree.Attribute = MomLocHandle;
     if (!CaseSensitive) {
         NLS_UpString(Neu->Tree.Name);
     }
     EnterStruct.MayChange = EnterStruct.DoCross = FALSE;
-    TreeRoot                                    = &FirstLocSymbol->Tree;
-    EnterTree(&TreeRoot, (&Neu->Tree), SymbolAdder, &EnterStruct);
-    FirstLocSymbol = (PSymbolEntry)TreeRoot;
+    EnterSymbolHashTable(&FirstLocSymbol, Neu, SymbolAdder, &EnterStruct);
 }
 
 static void EnterSymbol_Search(
@@ -2200,7 +2274,6 @@ static void EnterSymbol(PSymbolEntry Neu, Boolean MayChange, LongInt ResHandle) 
     LongInt         MSect;
     PSymbolEntry    Copy;
     TEnterStruct    EnterStruct;
-    PTree           TreeRoot = &(FirstSymbol->Tree);
 
     if (!CaseSensitive) {
         NLS_UpString(Neu->Tree.Name);
@@ -2247,7 +2320,7 @@ static void EnterSymbol(PSymbolEntry Neu, Boolean MayChange, LongInt ResHandle) 
                        Copy->SymWert.Contents.str.len
                        = Copy->SymWert.Contents.str.capacity = l);
             }
-            EnterTree(&TreeRoot, &(Copy->Tree), SymbolAdder, &EnterStruct);
+            EnterSymbolHashTable(&FirstSymbol, Copy, SymbolAdder, &EnterStruct);
         }
         if (Lauf) {
             free(Lauf->Name);
@@ -2260,8 +2333,7 @@ static void EnterSymbol(PSymbolEntry Neu, Boolean MayChange, LongInt ResHandle) 
             free(Lauf);
         }
     }
-    EnterTree(&TreeRoot, &(Neu->Tree), SymbolAdder, &EnterStruct);
-    FirstSymbol = (PSymbolEntry)TreeRoot;
+    EnterSymbolHashTable(&FirstSymbol, Neu, SymbolAdder, &EnterStruct);
 }
 
 void PrintSymTree(char* Name) {
@@ -2615,7 +2687,7 @@ static void AddReference(PSymbolEntry Node) {
 static PSymbolEntry FindNode_FNode(char* Name, TempType SearchType, LongInt Handle) {
     PSymbolEntry Lauf;
 
-    Lauf = (PSymbolEntry)SearchTree(&FirstSymbol->Tree, Name, Handle);
+    Lauf = SearchSymbolHashTable(&FirstSymbol, Name, Handle);
 
     if (Lauf) {
         if (Lauf->SymWert.Typ & SearchType) {
@@ -2686,7 +2758,7 @@ static PSymbolEntry FindNode(char const* Name_O, TempType SearchType) {
 static PSymbolEntry FindLocNode_FNode(char* Name, TempType SearchType, LongInt Handle) {
     PSymbolEntry Lauf;
 
-    Lauf = (PSymbolEntry)SearchTree(&FirstLocSymbol->Tree, Name, Handle);
+    Lauf = SearchSymbolHashTable(&FirstLocSymbol, Name, Handle);
 
     if (Lauf) {
         if (!(Lauf->SymWert.Typ & SearchType)) {
@@ -3042,7 +3114,7 @@ void PrintSymbolList(void) {
     Context.Sum = Context.USum = 0;
     ActPageWidth               = (PageWidth == 0) ? 80 : PageWidth;
     Context.cwidth             = ActPageWidth >> 1;
-    IterTree(&FirstSymbol->Tree, PrintSymbolList_PNode, &Context);
+    IterSymbolHashTable(&FirstSymbol, PrintSymbolList_PNode, &Context);
     if (Context.Zeilenrest.p_str[0] != '\0') {
         Context.Zeilenrest.p_str[strlen(Context.Zeilenrest.p_str) - 1] = '\0';
         WrLstLine(Context.Zeilenrest.p_str);
@@ -3135,7 +3207,7 @@ void PrintDebSymbols(FILE* f) {
     DebContext.f = f;
     for (DebContext.Space = SegNone; DebContext.Space < SegCount; DebContext.Space++) {
         DebContext.HWritten = False;
-        IterTree(&FirstSymbol->Tree, PrintDebSymbols_PNode, &DebContext);
+        IterSymbolHashTable(&FirstSymbol, PrintDebSymbols_PNode, &DebContext);
     }
     as_dynstr_free(&DebContext.s);
 }
@@ -3169,7 +3241,7 @@ void PrintNoISymbols(FILE* f) {
 
     Context.f      = f;
     Context.Handle = -1;
-    IterTree(&FirstSymbol->Tree, PrNoISection, &Context);
+    IterSymbolHashTable(&FirstSymbol, PrNoISection, &Context);
     Context.Handle++;
     for (CurrSection = FirstSection; CurrSection; CurrSection = CurrSection->Next) {
         if (ChunkSum(&CurrSection->Usage) > 0) {
@@ -3179,7 +3251,7 @@ void PrintNoISymbols(FILE* f) {
             ChkIO(ErrNum_FileWriteError);
             fprintf(f, "\n");
             ChkIO(ErrNum_FileWriteError);
-            IterTree(&FirstSymbol->Tree, PrNoISection, &Context);
+            IterSymbolHashTable(&FirstSymbol, PrNoISection, &Context);
             Context.Handle++;
             fprintf(f, "}FUNC ");
             ChkIO(ErrNum_FileWriteError);
@@ -3192,7 +3264,7 @@ void PrintNoISymbols(FILE* f) {
 }
 
 void PrintSymbolTree(void) {
-    DumpTree(&FirstSymbol->Tree);
+    DumpSymbolHashTable(&FirstSymbol);
 }
 
 static void ClearSymbolList_ClearNode(PTree Node, void* pData) {
@@ -3203,14 +3275,8 @@ static void ClearSymbolList_ClearNode(PTree Node, void* pData) {
 }
 
 void ClearSymbolList(void) {
-    PTree TreeRoot;
-
-    TreeRoot    = &(FirstSymbol->Tree);
-    FirstSymbol = NULL;
-    DestroyTree(&TreeRoot, ClearSymbolList_ClearNode, NULL);
-    TreeRoot       = &(FirstLocSymbol->Tree);
-    FirstLocSymbol = NULL;
-    DestroyTree(&TreeRoot, ClearSymbolList_ClearNode, NULL);
+    DestroySymbolHashTable(&FirstSymbol, ClearSymbolList_ClearNode, NULL);
+    DestroySymbolHashTable(&FirstLocSymbol, ClearSymbolList_ClearNode, NULL);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -3465,8 +3531,8 @@ static void ResetSymbolDefines_ResetNode(PTree Node, void* pData) {
 }
 
 void ResetSymbolDefines(void) {
-    IterTree(&(FirstSymbol->Tree), ResetSymbolDefines_ResetNode, NULL);
-    IterTree(&(FirstLocSymbol->Tree), ResetSymbolDefines_ResetNode, NULL);
+    IterSymbolHashTable(&FirstSymbol, ResetSymbolDefines_ResetNode, NULL);
+    IterSymbolHashTable(&FirstLocSymbol, ResetSymbolDefines_ResetNode, NULL);
 }
 
 void SetFlag(Boolean* Flag, char const* Name, Boolean Wert) {
@@ -3559,7 +3625,7 @@ TempResult const* FindDefSymbol(char const* pName) {
 void PrintSymbolDepth(void) {
     LongInt TreeMin, TreeMax;
 
-    GetTreeDepth(&(FirstSymbol->Tree), &TreeMin, &TreeMax);
+    GetSymbolHashTableDepth(&FirstSymbol, &TreeMin, &TreeMax);
     fprintf(Debug, " MinTree %ld\n", (long)TreeMin);
     fprintf(Debug, " MaxTree %ld\n", (long)TreeMax);
 }
@@ -3810,7 +3876,7 @@ void PrintCrossList(void) {
     WrLstLine(getmessage(Num_ListCrossListHead1));
     WrLstLine(getmessage(Num_ListCrossListHead2));
     WrLstLine("");
-    IterTree(&(FirstSymbol->Tree), PrintCrossList_PNode, &val_str);
+    IterSymbolHashTable(&FirstSymbol, PrintCrossList_PNode, &val_str);
     WrLstLine("");
     as_dynstr_free(&val_str);
 }
@@ -3828,7 +3894,7 @@ static void ClearCrossList_CNode(PTree Tree, void* pData) {
 }
 
 void ClearCrossList(void) {
-    IterTree(&(FirstSymbol->Tree), ClearCrossList_CNode, NULL);
+    IterSymbolHashTable(&FirstSymbol, ClearCrossList_CNode, NULL);
 }
 
 /*--------------------------------------------------------------------------*/
@@ -3931,7 +3997,7 @@ void PrintRegDefs(void) {
     Context.Sum = Context.USum = 0;
     ActPageWidth               = (PageWidth == 0) ? 80 : PageWidth;
     Context.cwidth             = ActPageWidth >> 1;
-    IterTree(&FirstSymbol->Tree, PrintRegList_PNode, &Context);
+    IterSymbolHashTable(&FirstSymbol, PrintRegList_PNode, &Context);
 
     if (*Context.Zeilenrest.p_str) {
         WrLstLine(Context.Zeilenrest.p_str);
